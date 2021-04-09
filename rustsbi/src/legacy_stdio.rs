@@ -28,9 +28,14 @@ where
     T: Read<u8> + Write<u8>,
 {
     fn getchar(&mut self) -> u8 {
-        // 直接调用embedded-hal里面的函数
-        // 关于unwrap：因为这个是legacy函数，这里没有详细的处理流程，就panic掉
-        block!(self.inner.try_read()).ok().unwrap()
+        // 读取错误就返回-1
+        match self.inner.try_read() {
+            Ok(ch) => ch,
+            Err(_) => {
+                let error = -1;
+                error as u8
+            },
+        }
     }
 
     fn putchar(&mut self, ch: u8) {
