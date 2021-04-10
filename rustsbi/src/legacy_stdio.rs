@@ -2,11 +2,44 @@
 //! 如果制造实例的时候，给定了stdout，那么就会打印到这个stdout里面
 use embedded_hal::serial::{Read, Write};
 use nb::block;
+use alloc::vec::Vec;
+use alloc::string::String;
+use lazy_static::lazy_static;
+
+lazy_static! {
+    static ref BYTE_BUFFER: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+}
+
+lazy_static! {
+    static ref CHARS: Mutex<String> = Mutex::new(String::new());
+}
+
+fn push_byte(byte: u8) {
+    BYTE_BUFFER.lock().push(byte);
+}
+
+fn generate_chars() {
+    let mut buf_lock = BYTE_BUFFER.lock();
+    let mut chars_lock = CHARS.lock();
+    let len = buf_lock.len();
+    let chars = core::str::from_utf8(&buf_lock[0..len]).unwrap();
+    chars_lock.push_str(chars);
+    buf_lock.clear();
+}
+
+fn chars_len() -> usize {
+    CHARS.lock().len()
+}
+
+fn getchar_from_chars() -> usize {
+    let ch = CHARS.lock().remove(0);
+    ch as usize
+}
 
 /// Legacy standard input/output
 pub trait LegacyStdio: Send {
     /// Get a character from legacy stdin
-    fn getchar(&mut self) -> u8;
+    fn getchar(&mut self) -> usize;
     /// Put a character into legacy stdout
     fn putchar(&mut self, ch: u8);
 }
@@ -27,15 +60,34 @@ impl<T: Send> LegacyStdio for EmbeddedHalSerial<T>
 where
     T: Read<u8> + Write<u8>,
 {
-    fn getchar(&mut self) -> u8 {
-        // 读取错误就返回-1
-        match self.inner.try_read() {
-            Ok(ch) => ch,
-            Err(_) => {
-                let error = -1;
-                error as u8
-            },
+    // 反正sbi返回值是usize，这里返回也是usize，何乐而不为（其实只要u32）
+    // 通过阻塞获得第一个字符，然后直到读取错误（即读取结束），
+    // 获得字符的多少取决于你输入法一次能打多少
+    // 通过将其转换成String，一个个remove即可
+    // 上可utf8，下可ascii
+    // 运行的开销自然多了一些些（总比返回-1，各种特权级乱跳的好）
+    fn getchar(&mut self) -> usize {
+        if chars_len() != 0 {
+            return getchar_from_chars();
         }
+
+        let first_byte = block!(
+            self.inner.try_read()
+        ).ok().unwrap();
+
+        push_byte(first_byte);
+
+        loop {
+            match self.inner.try_read() {
+                Ok(byte) => push_byte(byte),
+                Err(_) => {
+                    generate_chars();
+                    break;
+                }
+            }
+        }
+
+        getchar_from_chars()
     }
 
     fn putchar(&mut self, ch: u8) {
@@ -54,8 +106,27 @@ where
     T: Write<u8> + Send + 'static,
     R: Read<u8> + Send + 'static,
 {
-    fn getchar(&mut self) -> u8 {
-        block!(self.1.try_read()).ok().unwrap()
+    fn getchar(&mut self) -> usize {
+        if chars_len() != 0 {
+            return getchar_from_chars();
+        }
+
+        let first_byte = block!(
+            self.1.try_read()
+        ).ok().unwrap();
+        push_byte(first_byte);
+
+        loop {
+            match self.1.try_read() {
+                Ok(byte) => push_byte(byte),
+                Err(_) => {
+                    generate_chars();
+                    break;
+                }
+            }
+        }
+
+        getchar_from_chars()
     }
 
     fn putchar(&mut self, ch: u8) {
@@ -94,7 +165,7 @@ pub(crate) fn legacy_stdio_putchar(ch: u8) {
     }
 }
 
-pub(crate) fn legacy_stdio_getchar() -> u8 {
+pub(crate) fn legacy_stdio_getchar() -> usize {
     if let Some(stdio) = LEGACY_STDIO.lock().as_mut() {
         stdio.getchar()
     } else {
