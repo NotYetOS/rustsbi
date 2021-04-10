@@ -18,13 +18,21 @@ fn push_byte(byte: u8) {
     BYTE_BUFFER.lock().push(byte);
 }
 
-fn generate_chars() {
+fn generate_chars() -> bool {
     let mut buf_lock = BYTE_BUFFER.lock();
     let mut chars_lock = CHARS.lock();
     let len = buf_lock.len();
-    let chars = core::str::from_utf8(&buf_lock[0..len]).unwrap();
-    chars_lock.push_str(chars);
-    buf_lock.clear();
+    match core::str::from_utf8(&buf_lock[0..len]) {
+        Ok(chars) => {
+            chars_lock.push_str(chars);
+            buf_lock.clear();
+            true
+        }
+        Err(_) => {
+            buf_lock.clear();
+            false
+        }
+    }
 }
 
 fn chars_len() -> usize {
@@ -66,6 +74,7 @@ where
     // 通过将其转换成String，一个个remove即可
     // 上可utf8，下可ascii
     // 运行的开销自然多了一些些（总比返回-1，各种特权级乱跳的好）
+    // 如果返回-1，即说明读取有问题
     fn getchar(&mut self) -> usize {
         if chars_len() != 0 {
             return getchar_from_chars();
@@ -81,8 +90,12 @@ where
             match self.inner.try_read() {
                 Ok(byte) => push_byte(byte),
                 Err(_) => {
-                    generate_chars();
-                    break;
+                    if !generate_chars() {
+                        let ret = -1;
+                        return ret as usize;
+                    } else {
+                        break;
+                    }
                 }
             }
         }
@@ -120,8 +133,12 @@ where
             match self.1.try_read() {
                 Ok(byte) => push_byte(byte),
                 Err(_) => {
-                    generate_chars();
-                    break;
+                    if !generate_chars() {
+                        let ret = -1;
+                        return ret as usize;
+                    } else {
+                        break;
+                    }
                 }
             }
         }
